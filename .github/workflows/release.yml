@@ -20,8 +20,12 @@ jobs:
   setup:
     runs-on: ubuntu-24.04
     outputs:
+      application_name: ${{ steps.app.outputs.value }}
       version: ${{ steps.version.outputs.value }}
     steps:
+      - id: app
+        run: echo "value=${{ env.APPLICATION_NAME }}" >> "$GITHUB_OUTPUT"
+
       - id: version
         run: echo "value=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
@@ -29,7 +33,7 @@ jobs:
     needs: setup
     runs-on: ubuntu-24.04
     env:
-      PACKAGE_NAME: ${{ env.APPLICATION_NAME }}-${{ needs.setup.outputs.version }}-linux
+      PACKAGE_NAME: ${{ needs.setup.outputs.application_name }}-${{ needs.setup.outputs.version }}-linux
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,8 +59,8 @@ jobs:
       - name: Package
         run: |
           mkdir "$PACKAGE_NAME"
-          cp README.md "build/${{ env.APPLICATION_NAME }}" "$PACKAGE_NAME/"
-          strip "$PACKAGE_NAME/${{ env.APPLICATION_NAME }}"
+          cp README.md "build/${{ needs.setup.outputs.application_name }}" "$PACKAGE_NAME/"
+          strip "$PACKAGE_NAME/${{ needs.setup.outputs.application_name }}"
           zip -9r "$PACKAGE_NAME.zip" "$PACKAGE_NAME"
 
       - uses: actions/upload-artifact@v4
@@ -68,7 +72,7 @@ jobs:
     needs: setup
     runs-on: windows-2022
     env:
-      PACKAGE_NAME: ${{ env.APPLICATION_NAME }}-${{ needs.setup.outputs.version }}-windows
+      PACKAGE_NAME: ${{ needs.setup.outputs.application_name }}-${{ needs.setup.outputs.version }}-windows
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,7 +95,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "${{ env.PACKAGE_NAME }}" | Out-Null
-          Copy-Item README.md, "build\Release\${{ env.APPLICATION_NAME }}.exe" -Destination "${{ env.PACKAGE_NAME }}"
+          Copy-Item README.md, "build\Release\${{ needs.setup.outputs.application_name }}.exe" -Destination "${{ env.PACKAGE_NAME }}"
           Compress-Archive -Path "${{ env.PACKAGE_NAME }}" -DestinationPath "${{ env.PACKAGE_NAME }}.zip"
 
       - uses: actions/upload-artifact@v4
