@@ -1,0 +1,83 @@
+LLM Summary
+-------
+
+The Vulkan implementation of Mish can produce NaN on an AMD Radeon RX 6700
+under Windows for large positive FP32 inputs. The same GPU in a Linux dual-boot
+installation using RADV produces finite output.
+
+The observed model uses fused Convolution activation_type=5 (Mish), pack4 and
+FP32 storage/arithmetic. The first non-finite tensor was the output of:
+
+  Convolution convmish_35 1 1 874 875 0=24 1=3 4=1 5=1 6=7776 9=5
+
+Input blob 874 was fully finite on both systems. On Windows, blob 875 had 26
+NaN values; all were in logical channel 20 (pack4 plane 5, lane 0). The
+corresponding Linux output values were between 88.808334 and 110.860474.
+
+Environment
+-----------
+
+- ncnn: 9fc8106e6634a60f39945d63e5ed2dd0704ac9fc
+- GPU: AMD Radeon RX 6700
+- FP32: use_fp16_storage=0, use_fp16_packed=0,
+  use_fp16_arithmetic=0, use_int8_storage=0, use_int8_arithmetic=0
+
+Reproducer
+----------
+
+The attached/minimal repository runs a one-layer Vulkan Mish model on:
+
+  20.0, 80.0, 88.8, 110.0
+
+Expected output is finite and approximately equal to the input for all values.
+On the affected Windows configuration, values in the high positive range may
+become NaN. Linux RADV stays finite.
+
+Diagnosis
+---------
+
+The existing Vulkan shaders calculate Mish through:
+
+  x * tanh(log(exp(x) + 1))
+
+or its vector equivalent. This evaluates exp/tanh for high positive values
+even though Mish converges to x. The issue is reproducible across many fused
+convmish_* layers in the real model. Replacing all Mish activations with ReLU
+or disabling them eliminates the NaNs, but changes model semantics.
+
+Proposed fix
+------------
+
+Use a stable Mish implementation for both:
+
+- src/layer/vulkan/shader/vulkan_activation.comp (activation_type == 5)
+- src/layer/vulkan/shader/mish.comp
+
+For x <= 20:
+
+  softplus(x) = max(x, 0) + log(1 + exp(-abs(x)))
+  mish(x) = x * tanh(softplus(x))
+
+For x > 20:
+
+  mish(x) = x
+
+At FP32 precision, Mish and x are indistinguishable in that positive range,
+while the branch avoids unstable driver math for exp/tanh. Applying this
+change made the Windows output finite and visually match the original Linux
+model output.
+
+Observed workaround validation
+------------------------------
+
+On Windows:
+
+- Original Mish: first NaNs at convmish_35, 26 NaNs.
+- Disable Mish only at convmish_35: first NaNs move to convmish_37.
+- Disable Mish only at convmish_35 and convmish_37: first NaNs move to
+  convmish_39.
+- Disable Mish in all 74 convmish_* layers: no NaNs, but the mask is degraded.
+- Replace Mish with ReLU in all 74 layers: no NaNs and output is very close to
+  Linux, but it changes the model.
+- Use the proposed high-positive Mish shortcut in all layers: no NaNs and
+  output matches the original Linux result.

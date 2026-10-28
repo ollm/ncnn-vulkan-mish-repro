@@ -1,0 +1,117 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: Create a GitHub release with the binaries
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  APPLICATION_NAME: ncnn-vulkan-mish-repro
+  VK_VERSION: 1.4.335.0
+
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - id: version
+        run: echo "value=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: setup
+    runs-on: ubuntu-24.04
+    env:
+      PACKAGE_NAME: ${{ env.APPLICATION_NAME }}-${{ needs.setup.outputs.version }}-linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++-13 zip
+
+      - name: Install Vulkan SDK
+        run: |
+          curl -L "https://sdk.lunarg.com/sdk/download/${{ env.VK_VERSION }}/linux/vulkansdk-linux-x86_64-${{ env.VK_VERSION }}.tar.xz?Human=true" -o vulkan-sdk.tar.xz
+          tar xf vulkan-sdk.tar.xz
+
+      - name: Build
+        run: |
+          export CC=gcc-13 CXX=g++-13
+          export VULKAN_SDK="$GITHUB_WORKSPACE/${{ env.VK_VERSION }}/x86_64"
+          cmake -S . -B build -DNCNN_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+
+      - name: Package
+        run: |
+          mkdir "$PACKAGE_NAME"
+          cp README.md "build/${{ env.APPLICATION_NAME }}" "$PACKAGE_NAME/"
+          strip "$PACKAGE_NAME/${{ env.APPLICATION_NAME }}"
+          zip -9r "$PACKAGE_NAME.zip" "$PACKAGE_NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: ${{ env.PACKAGE_NAME }}.zip
+
+  windows:
+    needs: setup
+    runs-on: windows-2022
+    env:
+      PACKAGE_NAME: ${{ env.APPLICATION_NAME }}-${{ needs.setup.outputs.version }}-windows
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/${{ env.VK_VERSION }}/windows/vulkansdk-windows-X64-${{ env.VK_VERSION }}.exe" -OutFile vk.exe
+          .\vk.exe install --accept-licenses --default-answer --confirm-command --root C:\VulkanSDK
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:VULKAN_SDK = "C:\VulkanSDK"
+          cmake -S . -B build -A x64 -DNCNN_VULKAN=ON
+          cmake --build build --config Release --parallel 2
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "${{ env.PACKAGE_NAME }}" | Out-Null
+          Copy-Item README.md, "build\Release\${{ env.APPLICATION_NAME }}.exe" -Destination "${{ env.PACKAGE_NAME }}"
+          Compress-Archive -Path "${{ env.PACKAGE_NAME }}" -DestinationPath "${{ env.PACKAGE_NAME }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: ${{ env.PACKAGE_NAME }}.zip
+
+  release:
+    if: ${{ inputs.create_release }}
+    needs: [setup, linux, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mish-repro-${{ needs.setup.outputs.version }}
+          name: ncnn Vulkan Mish reproducer ${{ needs.setup.outputs.version }}
+          generate_release_notes: true
+          files: artifacts/**/*.zip
